@@ -14,20 +14,8 @@ import (
 	"github.com/mmcdole/gofeed"
 )
 
-var markdownDirPath string
 var mdPrefix, mdSuffix string
-var terminalMode bool = false
 var currentDate = time.Now().Format("2006-01-02")
-var lat, lon float64
-var instapaper bool
-var openaiApiKey string
-var openaiBaseURL string
-var openaiModel string
-var reading_time bool
-var show_images bool
-var sunrise_sunset bool
-var myFeeds []RSS
-var db *sql.DB
 
 type RSS struct {
 	url       string
@@ -42,11 +30,11 @@ type Writer interface {
 	writeFavicon(s *gofeed.Feed) string
 }
 
-func getWriter() Writer {
-	if terminalMode {
+func getWriter(cfg Config) Writer {
+	if cfg.TerminalMode {
 		return TerminalWriter{}
 	}
-	return MarkdownWriter{}
+	return MarkdownWriter{MarkdownDirPath: cfg.MarkdownDirPath}
 }
 
 func fatal(e error) {
@@ -157,63 +145,61 @@ func parseFeed(fp *gofeed.Parser, url string, limit int) *gofeed.Feed {
 	return feed
 }
 
-// Generates the feed items and returns them as a string
-func generateFeedItems(w Writer, feed *gofeed.Feed, rss RSS) string {
-	var items string
+// Processes a single feed item and returns its string representation
+func processFeedItem(db *sql.DB, w Writer, feed *gofeed.Feed, rss RSS, item *gofeed.Item, cfg Config) string {
+	seen, seen_today, summary := isSeenArticle(db, item, "")
+	if seen {
+		return ""
+	}
+	title, link := item.Title, item.Link
+	if summary == "" {
+		summary = getSummary(cfg, rss, item, link)
+	}
+	var itemStr string
 
-	for _, item := range feed.Items {
-		seen, seen_today, summary := isSeenArticle(item, "")
-		if seen {
-			continue
-		}
-		title, link := getFeedTitleAndLink(item)
-		if summary == "" {
-			summary = getSummary(rss, item, link)
-		}
-		// Add the comments link if it's a Hacker News feed
-		if strings.Contains(feed.Link, "news.ycombinator.com") {
-			commentsLink, commentsCount := getCommentsInfo(item)
-			if commentsCount < 100 {
-				items += w.writeLink("💬 ", commentsLink, false, "")
-			} else {
-				items += w.writeLink("🔥 ", commentsLink, false, "")
-			}
-		}
-
-		// Add the Instapaper link if enabled
-		if instapaper && !terminalMode {
-			items += getInstapaperLink(item.Link)
-		}
-
-		// Support RSS with no Title (such as Mastodon), use Description instead
-		if title == "" {
-			title = stripHtmlRegex(item.Description)
-		}
-
-		timeInMin := ""
-		if reading_time {
-			timeInMin = getReadingTime(link)
-		}
-
-		items += w.writeLink(title, link, true, timeInMin)
-		if rss.summarize {
-			items += w.writeSummary(summary, true)
-		}
-
-		if show_images && !terminalMode {
-			img := ExtractImageTagFromHTML(item.Content)
-			if img != "" {
-				items += img + "\n"
-			}
-		}
-
-		// Add the item to the seen table if not seen today
-		if !seen_today {
-			addToSeenTable(item.Link, summary)
+	// Add the comments link if it's a Hacker News feed
+	if strings.Contains(feed.Link, "news.ycombinator.com") {
+		commentsLink, commentsCount := getCommentsInfo(item)
+		if commentsCount < 100 {
+			itemStr += w.writeLink("💬 ", commentsLink, false, "")
+		} else {
+			itemStr += w.writeLink("🔥 ", commentsLink, false, "")
 		}
 	}
 
-	return items
+	// Add the Instapaper link if enabled
+	if cfg.Instapaper && !cfg.TerminalMode {
+		itemStr += getInstapaperLink(item.Link)
+	}
+
+	// Support RSS with no Title (such as Mastodon), use Description instead
+	if title == "" {
+		title = stripHtmlRegex(item.Description)
+	}
+
+	timeInMin := ""
+	if cfg.ReadingTime {
+		timeInMin = getReadingTime(link)
+	}
+
+	itemStr += w.writeLink(title, link, true, timeInMin)
+	if rss.summarize {
+		itemStr += w.writeSummary(summary, true)
+	}
+
+	if cfg.ShowImages && !cfg.TerminalMode {
+		img := ExtractImageTagFromHTML(item.Content)
+		if img != "" {
+			itemStr += img + "\n"
+		}
+	}
+
+	// Add the item to the seen table if not seen today
+	if !seen_today {
+		addToSeenTable(db, item.Link, summary)
+	}
+
+	return itemStr
 }
 
 // Writes the feed and its items
@@ -221,18 +207,13 @@ func writeFeed(w Writer, feed *gofeed.Feed, items string) {
 	w.write(fmt.Sprintf("\n### %s  %s\n%s", w.writeFavicon(feed), feed.Title, items))
 }
 
-// Returns the title and link for the given feed item
-func getFeedTitleAndLink(item *gofeed.Item) (string, string) {
-	return item.Title, item.Link
-}
-
 // Returns the summary for the given feed item
-func getSummary(rss RSS, item *gofeed.Item, link string) string {
+func getSummary(cfg Config, rss RSS, item *gofeed.Item, link string) string {
 	if !rss.summarize {
 		return ""
 	}
 
-	summary := getSummaryFromLink(link)
+	summary := getSummaryFromLink(cfg, link)
 	if summary == "" {
 		summary = item.Description
 	}
@@ -253,7 +234,7 @@ func getCommentsInfo(item *gofeed.Item) (string, int) {
 	return comments_url, comments_number_int
 }
 
-func addToSeenTable(link string, summary string) {
+func addToSeenTable(db *sql.DB, link string, summary string) {
 	stmt, err := db.Prepare("INSERT INTO seen(url, date, summary) values(?,?,?)")
 	fatal(err)
 	res, err := stmt.Exec(link, currentDate, summary)
@@ -266,7 +247,7 @@ func getInstapaperLink(link string) string {
 	return "[<img height=\"16\" src=\"https://staticinstapaper.s3.dualstack.us-west-2.amazonaws.com/img/favicon.png\">](https://www.instapaper.com/hello2?url=" + link + ")"
 }
 
-func isSeenArticle(item *gofeed.Item, postfix string) (seen bool, today bool, summaryText string) {
+func isSeenArticle(db *sql.DB, item *gofeed.Item, postfix string) (seen bool, today bool, summaryText string) {
 	var url string
 	var date string
 	var summary sql.NullString

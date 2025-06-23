@@ -20,17 +20,17 @@ func (c *UserAgentTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	return c.RoundTripper.RoundTrip(r)
 }
 
-func displayWeather(w Writer) {
+func displayWeather(w Writer, cfg Config) {
 	// Display weather if lat and lon are set
-	if lat != 0 && lon != 0 {
-		w.write(getWeather(lat, lon))
+	if cfg.WeatherLatitude != 0 && cfg.WeatherLongitude != 0 {
+		w.write(getWeather(cfg.WeatherLatitude, cfg.WeatherLongitude))
 	}
 }
 
-func displaySunriseSunset(w Writer) {
-	if sunrise_sunset && lat != 0 && lon != 0 {
+func displaySunriseSunset(w Writer, cfg Config) {
+	if cfg.SunriseSunset && cfg.WeatherLatitude != 0 && cfg.WeatherLongitude != 0 {
 		rise, set := sunrise.SunriseSunset(
-			lat, lon,
+			cfg.WeatherLatitude, cfg.WeatherLongitude,
 			time.Now().Year(), time.Now().Month(), time.Now().Day(),
 		)
 		w.write(fmt.Sprintf("🌅 %s 🌇 %s", rise.Local().Format("15:04"), set.Local().Format("15:04")))

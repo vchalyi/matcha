@@ -2,6 +2,21 @@ package main
 
 import "database/sql"
 
+func newDB(dbPath string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply migrations to ensure the database schema is up to date
+	err = applyMigrations(db)
+	if err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
 func applyMigrations(db *sql.DB) error {
 	// create new table on database
 	var err error

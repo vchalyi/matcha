@@ -9,34 +9,32 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-func getSummaryFromLink(url string) string {
+func getSummaryFromLink(cfg Config, url string) string {
 	article, err := readability.FromURL(url, 30*time.Second)
 	if err != nil {
 		fmt.Printf("Failed to parse %s, %v\n", url, err)
 	}
 
-	return summarize(article.TextContent)
+	return summarize(article.TextContent, cfg)
 
 }
 
-func summarize(text string) string {
-	// Not sending everything to preserve Openai tokens in case the article is too long
-	maxCharactersToSummarize := 5000
-	if len(text) > maxCharactersToSummarize {
-		text = text[:maxCharactersToSummarize]
+func summarize(text string, cfg Config) string {
+	if len(text) > cfg.SummaryArticleLengthLimit {
+		text = text[:cfg.SummaryArticleLengthLimit]
 	}
 
 	// Dont summarize if the article is too short
 	if len(text) < 200 {
 		return ""
 	}
-	clientConfig := openai.DefaultConfig(openaiApiKey)
-	if openaiBaseURL != "" {
-		clientConfig.BaseURL = openaiBaseURL
+	clientConfig := openai.DefaultConfig(cfg.OpenaiApiKey)
+	if cfg.OpenaiBaseURL != "" {
+		clientConfig.BaseURL = cfg.OpenaiBaseURL
 	}
 	model := openai.GPT3Dot5Turbo
-	if openaiModel != "" {
-		model = openaiModel
+	if cfg.OpenaiModel != "" {
+		model = cfg.OpenaiModel
 	}
 	client := openai.NewClientWithConfig(clientConfig)
 	resp, err := client.CreateChatCompletion(

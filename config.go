@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/xml"
 	"flag"
 	"fmt"
@@ -36,12 +35,61 @@ openai_api_key:
 openai_base_url:
 openai_model:
 summary_feeds:
+summary_article_lenght_limit: 5000
 show_images: false
 analyst_feeds:
   - https://feeds.bbci.co.uk/news/business/rss.xml
 analyst_prompt:
 analyst_model:
 `
+
+type Config struct {
+	MarkdownDirPath           string
+	Feeds                     []RSS
+	SummaryFeeds              []RSS
+	SummaryArticleLengthLimit int
+	GoogleNewsKeywords        string
+	GoogleNewsFeeds           []RSS
+	Instapaper                bool
+	WeatherLatitude           float64
+	WeatherLongitude          float64
+	TerminalMode              bool
+	OpmlFilePath              string
+	OpmlFeeds                 []RSS
+	MarkdownFilePrefix        string
+	MarkdownFileSuffix        string
+	ReadingTime               bool
+	SunriseSunset             bool
+	OpenaiApiKey              string
+	OpenaiBaseURL             string
+	OpenaiModel               string
+	ShowImages                bool
+	DatabaseFilePath          string
+}
+
+func (cfg *Config) GetAllFeeds() []RSS {
+
+	allFeeds := []RSS{}
+	allFeeds = append(allFeeds, cfg.Feeds...)
+	allFeeds = append(allFeeds, cfg.SummaryFeeds...)
+	allFeeds = append(allFeeds, cfg.GoogleNewsFeeds...)
+	allFeeds = append(allFeeds, cfg.OpmlFeeds...)
+
+	return allFeeds
+}
+
+func (cfg *Config) GetDbPath() string {
+	if cfg.DatabaseFilePath != "" {
+		return cfg.DatabaseFilePath
+	}
+
+	databaseDirPath, err := os.UserConfigDir()
+	fatal(err)
+	databaseFilePath := filepath.Join(databaseDirPath, "brew", "matcha.db")
+	fatal(os.MkdirAll(filepath.Dir(databaseFilePath), os.ModePerm))
+
+	return databaseFilePath
+}
 
 func parseOPML(xmlContent []byte) []RSS {
 	o := Opml{}
@@ -77,13 +125,22 @@ func getFeedAndLimit(feedURL string) (string, int) {
 	return chopped[0], limit
 }
 
-func bootstrapConfig() {
+func bootstrapConfig() Config {
 	currentDir, direrr := os.Getwd()
 	if direrr != nil {
 		log.Println(direrr)
 	}
+
+	cfg := Config{
+		Feeds:           []RSS{},
+		SummaryFeeds:    []RSS{},
+		GoogleNewsFeeds: []RSS{},
+		OpmlFeeds:       []RSS{},
+		TerminalMode:    false,
+	}
+
 	// if -t parameter is passed overwrite terminal_mode setting in config.yml
-	flag.BoolVar(&terminalMode, "t", terminalMode, "Run Matcha in Terminal Mode, no markdown files will be created")
+	flag.BoolVar(&cfg.TerminalMode, "t", cfg.TerminalMode, "Run Matcha in Terminal Mode, no markdown files will be created")
 	configFile := flag.String("c", "", "Config file path (if you want to override the current directory config.yaml)")
 	opmlFile := flag.String("o", "", "OPML file path to append feeds from opml files")
 	build := flag.Bool("build", false, "Dev: Build matcha binaries in the bin directory")
@@ -94,7 +151,6 @@ func bootstrapConfig() {
 		os.Exit(0)
 	}
 
-	// if -c parameter is passed overwrite config.yaml setting in config.yaml
 	if len(*configFile) > 0 {
 		viper.SetConfigFile(*configFile)
 	} else {
@@ -110,103 +166,96 @@ func bootstrapConfig() {
 	}
 
 	if viper.IsSet("markdown_dir_path") {
-		markdownDirPath = viper.Get("markdown_dir_path").(string)
+		cfg.MarkdownDirPath = viper.Get("markdown_dir_path").(string)
 	} else {
-		markdownDirPath = currentDir
+		cfg.MarkdownDirPath = currentDir
 	}
-	myFeeds = []RSS{}
+
 	feeds := viper.Get("feeds")
 	if viper.IsSet("weather_latitude") {
-		lat = viper.Get("weather_latitude").(float64)
+		cfg.WeatherLatitude = viper.Get("weather_latitude").(float64)
 	}
 	if viper.IsSet("weather_longitude") {
-		lon = viper.Get("weather_longitude").(float64)
+		cfg.WeatherLongitude = viper.Get("weather_longitude").(float64)
 	}
 	if viper.IsSet("markdown_file_prefix") {
-		mdPrefix = viper.Get("markdown_file_prefix").(string)
+		cfg.MarkdownFilePrefix = viper.Get("markdown_file_prefix").(string)
+		mdPrefix = cfg.MarkdownFilePrefix
 	}
 	if viper.IsSet("markdown_file_suffix") {
-		mdSuffix = viper.Get("markdown_file_suffix").(string)
+		cfg.MarkdownFileSuffix = viper.Get("markdown_file_suffix").(string)
+		mdSuffix = cfg.MarkdownFileSuffix
 	}
 	if viper.IsSet("openai_api_key") {
-		openaiApiKey = viper.Get("openai_api_key").(string)
+		cfg.OpenaiApiKey = viper.Get("openai_api_key").(string)
 	}
 	if viper.IsSet("openai_base_url") {
-		openaiBaseURL = viper.Get("openai_base_url").(string)
+		cfg.OpenaiBaseURL = viper.Get("openai_base_url").(string)
 	}
 	if viper.IsSet("openai_model") {
-		openaiModel = viper.Get("openai_model").(string)
+		cfg.OpenaiModel = viper.Get("openai_model").(string)
 	}
 
+	cfg.SummaryFeeds = []RSS{}
 	if viper.IsSet("summary_feeds") {
 		summaryFeeds := viper.Get("summary_feeds")
-
 		for _, summaryFeed := range summaryFeeds.([]any) {
 			url, limit := getFeedAndLimit(summaryFeed.(string))
-			myFeeds = append(myFeeds, RSS{url: url, limit: limit, summarize: true})
+			feed := RSS{url: url, limit: limit, summarize: true}
+			cfg.SummaryFeeds = append(cfg.SummaryFeeds, feed)
 		}
+	}
+
+	if viper.IsSet("summary_article_lenght_limit") {
+		cfg.SummaryArticleLengthLimit = viper.Get("summary_article_lenght_limit").(int)
 	}
 
 	for _, feed := range feeds.([]any) {
 		url, limit := getFeedAndLimit(feed.(string))
-		myFeeds = append(myFeeds, RSS{url: url, limit: limit})
+		rss := RSS{url: url, limit: limit}
+		cfg.Feeds = append(cfg.Feeds, rss)
 	}
 
 	if viper.IsSet("google_news_keywords") {
-		googleNewsKeywords := url.QueryEscape(viper.Get("google_news_keywords").(string))
+		cfg.GoogleNewsKeywords = viper.Get("google_news_keywords").(string)
+		googleNewsKeywords := url.QueryEscape(cfg.GoogleNewsKeywords)
 		if googleNewsKeywords != "" {
 			googleNewsUrl := "https://news.google.com/rss/search?hl=en-US&gl=US&ceid=US%3Aen&oc=11&q=" + strings.Join(strings.Split(googleNewsKeywords, "%2C"), "%20%7C%20")
-			myFeeds = append(myFeeds, RSS{url: googleNewsUrl, limit: 15}) // #FIXME make it configurable
+			cfg.GoogleNewsFeeds = append(cfg.GoogleNewsFeeds, RSS{url: googleNewsUrl, limit: 15})
 		}
 	}
 
-	// Import any config.opml file on current direcotory
+	cfg.OpmlFilePath = ""
 	configPath := currentDir + "/" + "config.opml"
 	if _, err := os.Stat(configPath); err == nil {
 		xmlContent, _ := os.ReadFile(currentDir + "/" + "config.opml")
-		myFeeds = append(myFeeds, parseOPML(xmlContent)...)
+		feeds := parseOPML(xmlContent)
+		cfg.OpmlFeeds = append(cfg.OpmlFeeds, feeds...)
 	}
-	// Append any opml file added by -o parameter
 	if len(*opmlFile) > 0 {
 		xmlContent, _ := os.ReadFile(*opmlFile)
-		myFeeds = append(myFeeds, parseOPML(xmlContent)...)
+		feeds := parseOPML(xmlContent)
+		cfg.OpmlFeeds = append(cfg.OpmlFeeds, feeds...)
 	}
-
-	// Append opml file from config.yml
 	if viper.IsSet("opml_file_path") {
-		xmlContent, _ := os.ReadFile(viper.Get("opml_file_path").(string))
-		myFeeds = append(myFeeds, parseOPML(xmlContent)...)
+		cfg.OpmlFilePath = viper.Get("opml_file_path").(string)
+		xmlContent, _ := os.ReadFile(cfg.OpmlFilePath)
+		feeds := parseOPML(xmlContent)
+		cfg.OpmlFeeds = append(cfg.OpmlFeeds, feeds...)
 	}
 
-	instapaper = viper.GetBool("instapaper")
-	reading_time = viper.GetBool("reading_time")
-	show_images = viper.GetBool("show_images")
-	sunrise_sunset = viper.GetBool("sunrise_sunset")
+	cfg.Instapaper = viper.GetBool("instapaper")
+	cfg.ReadingTime = viper.GetBool("reading_time")
+	cfg.ShowImages = viper.GetBool("show_images")
+	cfg.SunriseSunset = viper.GetBool("sunrise_sunset")
+	cfg.DatabaseFilePath = viper.GetString("database_file_path")
 
-	// Overwrite terminal_mode from config file only if its not set through -t flag
-	if !terminalMode {
-		terminalMode = viper.GetBool("terminal_mode")
-	}
-
-	databaseFilePath := viper.GetString("database_file_path")
-	if databaseFilePath == "" {
-		databaseDirPath, err := os.UserConfigDir()
-		fatal(err)
-		databaseFilePath = filepath.Join(databaseDirPath, "brew", "matcha.db")
-		fatal(os.MkdirAll(filepath.Dir(databaseFilePath), os.ModePerm))
-	}
-
-	db, err = sql.Open("sqlite", databaseFilePath)
-	fatal(err)
-	err = applyMigrations(db)
-	if err != nil {
-		log.Println("Coudn't apply migrations:", err)
-	}
-
-	if !terminalMode {
+	if !cfg.TerminalMode {
 		markdown_file_name := mdPrefix + currentDate + mdSuffix + ".md"
-		os.Remove(filepath.Join(markdownDirPath, markdown_file_name))
+		os.Remove(filepath.Join(cfg.MarkdownDirPath, markdown_file_name))
 	}
+
+	return cfg
 }
 
 func generateConfigFile(currentDir string) {

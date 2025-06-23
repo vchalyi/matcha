@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -13,7 +14,7 @@ import (
 const defaultLimit = 20 // default number of articles per feed for analysis
 var model = openai.GPT4o
 
-func generateAnalysis(fp *gofeed.Parser, writer Writer) {
+func generateAnalysis(db *sql.DB, fp *gofeed.Parser, writer Writer, cfg Config) {
 	if !viper.IsSet("analyst_feeds") || !viper.IsSet("analyst_prompt") {
 		return
 	}
@@ -29,13 +30,13 @@ func generateAnalysis(fp *gofeed.Parser, writer Writer) {
 			continue
 		}
 		for _, item := range parsedFeed.Items {
-			seen, seen_today, summary := isSeenArticle(item, "#analyst")
+			seen, seen_today, summary := isSeenArticle(db, item, "#analyst")
 			if seen {
 				continue
 			}
 			articleTitles = append(articleTitles, item.Title+":  "+item.Description) // add also description for better context
 			if !seen_today {
-				addToSeenTable(item.Link+"#analyst", summary)
+				addToSeenTable(db, item.Link+"#analyst", summary)
 			}
 		}
 	}
@@ -45,7 +46,7 @@ func generateAnalysis(fp *gofeed.Parser, writer Writer) {
 	}
 
 	prompt := fmt.Sprintf("%s\n\n%s", analystPrompt, strings.Join(articleTitles, "\n"))
-	analysis := getLLMAnalysis(prompt, analystModel)
+	analysis := getLLMAnalysis(prompt, analystModel, cfg)
 
 	if analysis != "" {
 		writer.write("\n## Daily Analysis:\n")
@@ -53,10 +54,10 @@ func generateAnalysis(fp *gofeed.Parser, writer Writer) {
 	}
 }
 
-func getLLMAnalysis(prompt string, analystModel string) string {
-	clientConfig := openai.DefaultConfig(openaiApiKey)
-	if openaiBaseURL != "" {
-		clientConfig.BaseURL = openaiBaseURL
+func getLLMAnalysis(prompt string, analystModel string, cfg Config) string {
+	clientConfig := openai.DefaultConfig(cfg.OpenaiApiKey)
+	if cfg.OpenaiBaseURL != "" {
+		clientConfig.BaseURL = cfg.OpenaiBaseURL
 	}
 	if analystModel != "" {
 		model = analystModel
